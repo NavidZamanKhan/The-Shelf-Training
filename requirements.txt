@@ -1,0 +1,18 @@
+# Web Scraping & API Interaction
+playwright>=1.40.0
+playwright-stealth>=1.0.6
+requests>=2.31.0
+tqdm>=4.66.0
+
+# Data Processing & Machine Learning
+pandas>=2.0.0
+numpy>=1.24.0
+scikit-learn>=1.3.0
+joblib>=1.3.0
+
+# Model Export & Conversion Tools (ONNX / TFLite Pipeline)
+skl2onnx>=1.15.0
+onnxruntime>=1.16.0
+# tensorflow>=2.14.0       # Optional: Needed if exporting directly via TensorFlow Lite converter or tf2onnx
+# onnx2tf>=1.17.0          # Recommended tool for converting ONNX models to TFLite format
+tflite-support>=0.4.4      # TFLite metadata and support tools for mobile integration

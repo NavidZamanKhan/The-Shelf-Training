@@ -1,0 +1,43 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Data & Output directories (track directory via .gitkeep)
+datasets/*
+!datasets/.gitkeep
+output/*
+!output/.gitkeep
+
+# Environments & Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment Variables & Secrets
+.env
+.env.local
+*.env
+
+# Operating System Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
