@@ -1,22 +1,29 @@
 """
 scrape_data.py
 ----------------
-Playwright-based web scraper for collecting book metadata and text descriptions 
-from web sources (e.g., Goodreads) to train 'The Shelf' classification model.
+Full two-tier Goodreads scraper for collecting supplemental training examples 
+for underrepresented shelf categories ('Graphic Novels', 'Philosophy', 'Poetry', 'Thriller').
 
-NOTE:
-    - Do NOT scrape API-friendly services (e.g., Open Library API, Jikan / MyAnimeList API) here.
-    - API-based data ingestion is handled separately in `fetch_api_data.py`.
+Features:
+- Tier 1: Paginate shelf listing pages (pages 1-8).
+- Tier 2: Visit detail pages to parse full book synopses via `div[data-testid="description"]`.
+- Deduplication: Title-based skipping against `goodreads_labeled.csv` and `goodreads_scraped_supplemental.csv`.
+- Incremental checkpointing: Appends rows to CSV after each book.
+- Politeness delay: 3.0 to 4.5 seconds randomized jitter.
 """
 
 import asyncio
-import json
+import csv
 import logging
+import random
+import re
+import time
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Set
 
-from playwright.async_api import async_playwright, BrowserContext, Page
-from playwright_stealth import stealth_async
+import pandas as pd
+from playwright.async_api import async_playwright, BrowserContext
+from playwright_stealth import Stealth
 
 # Configure logging
 logging.basicConfig(
@@ -25,25 +32,84 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Constants
-OUTPUT_DIR = Path(__file__).parent / "datasets"
-OUTPUT_FILE = OUTPUT_DIR / "scraped_books.json"
+# Constants & Paths
+BASE_DIR = Path(__file__).parent
+PROCESSED_DIR = BASE_DIR / "datasets" / "processed"
+PRIMARY_CSV_PATH = PROCESSED_DIR / "goodreads_labeled.csv"
+SUPPLEMENTAL_CSV_PATH = PROCESSED_DIR / "goodreads_scraped_supplemental.csv"
+GOODREADS_BASE_URL = "https://www.goodreads.com"
+
+# Target Categories: (shelf_slug, target_shelf_label, max_pages)
+TARGET_SHELVES = [
+    ("graphic-novels", "Graphic Novels", 8),
+    ("philosophy", "Philosophy", 8),
+    ("poetry", "Poetry", 8),
+    ("thriller", "Thriller", 8),
+]
 
 
-async def setup_stealth_context(playwright_instance, headless: bool = True) -> BrowserContext:
-    """
-    Launches Chromium with stealth configurations to bypass basic anti-bot detections.
-    
-    Args:
-        playwright_instance: The active Playwright instance.
-        headless (bool): Whether to run browser in headless mode.
-        
-    Returns:
-        BrowserContext: Configured browser context with stealth applied.
-    """
-    logger.info("Launching browser context with stealth configuration...")
+def normalize_title(title: str) -> str:
+    """Normalizes title string by lowercasing, removing format tags, and stripping punctuation."""
+    if not title:
+        return ""
+    # Remove trailing format tags like (Hardcover), (Paperback), etc.
+    cleaned = re.sub(r"\s*\([^)]*\)$", "", title)
+    cleaned = cleaned.lower().strip()
+    return cleaned
+
+
+def load_existing_titles() -> Set[str]:
+    """Loads existing normalized book titles from primary and supplemental CSVs."""
+    existing_titles: Set[str] = set()
+
+    # 1. Load primary labeled CSV
+    if PRIMARY_CSV_PATH.exists():
+        try:
+            df_primary = pd.read_csv(PRIMARY_CSV_PATH)
+            if "text" in df_primary.columns:
+                for text_val in df_primary["text"].dropna():
+                    # Extract title prefix before description
+                    first_sentence = str(text_val).split(". ")[0]
+                    existing_titles.add(normalize_title(first_sentence))
+            logger.info(f"Loaded {len(existing_titles)} existing title signatures from primary dataset.")
+        except Exception as e:
+            logger.warning(f"Error reading primary dataset {PRIMARY_CSV_PATH}: {e}")
+
+    # 2. Load supplemental CSV if it exists
+    if SUPPLEMENTAL_CSV_PATH.exists():
+        try:
+            df_supp = pd.read_csv(SUPPLEMENTAL_CSV_PATH)
+            if "text" in df_supp.columns:
+                for text_val in df_supp["text"].dropna():
+                    first_sentence = str(text_val).split(". ")[0]
+                    existing_titles.add(normalize_title(first_sentence))
+            logger.info(f"Loaded existing title signatures from supplemental dataset.")
+        except Exception as e:
+            logger.warning(f"Error reading supplemental dataset: {e}")
+
+    return existing_titles
+
+
+def init_supplemental_csv():
+    """Ensures output directory and supplemental CSV header exist."""
+    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+    if not SUPPLEMENTAL_CSV_PATH.exists():
+        with open(SUPPLEMENTAL_CSV_PATH, "w", encoding="utf-8", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["text", "shelf_label"])
+        logger.info(f"Initialized new supplemental CSV at {SUPPLEMENTAL_CSV_PATH}")
+
+
+def append_scraped_row(text: str, shelf_label: str):
+    """Appends a single scraped row to the supplemental CSV file."""
+    with open(SUPPLEMENTAL_CSV_PATH, "a", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([text, shelf_label])
+
+
+async def setup_stealth_context(playwright_instance) -> BrowserContext:
     browser = await playwright_instance.chromium.launch(
-        headless=headless,
+        headless=True,
         args=[
             "--disable-blink-features=AutomationControlled",
             "--no-sandbox",
@@ -58,100 +124,142 @@ async def setup_stealth_context(playwright_instance, headless: bool = True) -> B
             "Chrome/122.0.0.0 Safari/537.36"
         )
     )
-    
-    # Create page and apply playwright-stealth
-    page = await context.new_page()
-    await stealth_async(page)
-    await page.close()
-    
     return context
 
 
-async def scrape_book_genre_page(page: Page, target_url: str, genre: str) -> List[Dict[str, Any]]:
-    """
-    Placeholder async function structure for scraping a book/genre site (e.g., Goodreads).
-    
-    Args:
-        page (Page): Playwright page instance.
-        target_url (str): URL of the genre page or book list page to scrape.
-        genre (str): Target shelf/category label for classification.
-        
-    Returns:
-        List[Dict[str, Any]]: Scraped book entries containing title, author, description, genre label, etc.
-    """
-    logger.info(f"Navigating to genre page ({genre}): {target_url}")
-    scraped_books: List[Dict[str, Any]] = []
-
+async def fetch_detail_description(page, detail_url: str) -> str:
+    """Navigates to detail page and extracts full book description."""
     try:
-        # Step 1: Open the target URL and wait for DOM content to load
-        await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
-        
-        # TODO: Wait for specific content elements to appear (e.g., page.wait_for_selector('.bookTitle'))
-        logger.info("Waiting for page content selectors...")
+        response = await page.goto(detail_url, wait_until="domcontentloaded", timeout=25000)
+        if not response or response.status != 200:
+            logger.warning(f"Detail page HTTP {response.status if response else 'N/A'} for {detail_url}")
+            return ""
 
-        # Step 2: Extract placeholder elements/selectors
-        # TODO: Replace with real selectors once site targets are finalized
-        # Example selector placeholder:
-        # book_cards = await page.query_selector_all(".bookCard")
-        # for card in book_cards:
-        #     title = await card.query_selector(".bookTitle").inner_text()
-        #     description = await card.query_selector(".bookDescription").inner_text()
-        #     ...
+        selectors_to_try = [
+            'div[data-testid="description"]',
+            'span[data-testid="description"]',
+            '.Formatted',
+            '#description span[id^="freeText"]',
+            '.bookDescription'
+        ]
 
-        logger.info(f"Placeholder: Extracted elements for genre '{genre}'.")
-        
-        # Skeleton dataset record
-        placeholder_entry = {
-            "title": "Placeholder Book Title",
-            "author": "Placeholder Author",
-            "description": "Placeholder book summary and text description for classification.",
-            "genre": genre,
-            "source": "web_scraper"
-        }
-        scraped_books.append(placeholder_entry)
+        for sel in selectors_to_try:
+            element = await page.query_selector(sel)
+            if element:
+                text = (await element.inner_text()).strip()
+                if len(text) > 20:
+                    # Clean up 'Show more' button text if captured
+                    if text.endswith("Show more"):
+                        text = text[:-9].strip()
+                    return text
 
+        return ""
     except Exception as e:
-        logger.error(f"Error scraping {target_url}: {e}")
+        logger.warning(f"Error fetching detail page {detail_url}: {e}")
+        return ""
 
-    return scraped_books
 
+async def run_scraper():
+    start_time = time.time()
+    init_supplemental_csv()
+    seen_titles = load_existing_titles()
 
-async def main() -> None:
-    """
-    Main entry point for running the web scraper.
-    """
-    logger.info("Starting web scraper pipeline...")
-    
-    # Ensure datasets directory exists
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    
-    # Target genres/shelves to scrape (e.g., Fiction, Science, Technology, History)
-    targets = [
-        {"url": "https://www.goodreads.com/genres/science-fiction", "genre": "Sci-Fi"},
-        {"url": "https://www.goodreads.com/genres/history", "genre": "History"},
-        # TODO: Add additional target URLs for other shelf categories
-    ]
-    
-    all_results: List[Dict[str, Any]] = []
+    category_counts = {label: 0 for _, label, _ in TARGET_SHELVES}
+    total_scraped = 0
+
+    logger.info("Starting Stage 2 full scraping loop...")
 
     async with async_playwright() as p:
-        context = await setup_stealth_context(p, headless=True)
+        context = await setup_stealth_context(p)
         page = await context.new_page()
+        await Stealth().apply_stealth_async(page)
 
-        for target in targets:
-            # Respectful delay between requests
-            await asyncio.sleep(2)
-            results = await scrape_book_genre_page(page, target["url"], target["genre"])
-            all_results.extend(results)
+        for slug, shelf_label, max_pages in TARGET_SHELVES:
+            logger.info(f"=== Starting Shelf Category: [{shelf_label}] (Slug: {slug}) ===")
+
+            for page_num in range(1, max_pages + 1):
+                listing_url = f"{GOODREADS_BASE_URL}/shelf/show/{slug}?page={page_num}"
+                logger.info(f"Fetching listing page {page_num}/{max_pages}: {listing_url}")
+
+                # Politeness delay before page fetch
+                await asyncio.sleep(random.uniform(3.0, 4.5))
+
+                try:
+                    res = await page.goto(listing_url, wait_until="domcontentloaded", timeout=30000)
+                    if not res or res.status != 200:
+                        logger.error(f"Listing page returned status {res.status if res else 'N/A'}. Stopping scraper.")
+                        print(f"SCRAPER_BLOCKED_ERROR: Status {res.status if res else 'N/A'} on {listing_url}")
+                        return
+
+                    containers = await page.query_selector_all(".elementList")
+                    if not containers:
+                        containers = await page.query_selector_all(".bookBox")
+
+                    logger.info(f"Page {page_num}: Found {len(containers)} book item containers.")
+
+                    # Collect titles & detail URLs from listing page
+                    items_to_fetch = []
+                    for container in containers:
+                        title_el = await container.query_selector("a.bookTitle") or await container.query_selector(".bookTitle")
+                        if not title_el:
+                            continue
+
+                        raw_title = (await title_el.inner_text()).strip()
+                        href = await title_el.get_attribute("href")
+                        if not href:
+                            continue
+
+                        norm_title = normalize_title(raw_title)
+
+                        # Deduplication check
+                        if norm_title in seen_titles:
+                            continue
+
+                        full_detail_url = GOODREADS_BASE_URL + href if href.startswith("/") else href
+                        items_to_fetch.append((raw_title, norm_title, full_detail_url))
+
+                    logger.info(f"Page {page_num}: {len(items_to_fetch)} new candidate books after deduplication.")
+
+                    # Tier 2: Visit individual detail pages
+                    for raw_title, norm_title, detail_url in items_to_fetch:
+                        # Politeness delay before detail fetch
+                        await asyncio.sleep(random.uniform(3.0, 4.5))
+
+                        description = await fetch_detail_description(page, detail_url)
+                        if not description:
+                            continue
+
+                        # Construct unified text
+                        combined_text = f"{raw_title}. {description}"
+
+                        # Append row incrementally to CSV
+                        append_scraped_row(combined_text, shelf_label)
+                        seen_titles.add(norm_title)
+                        category_counts[shelf_label] += 1
+                        total_scraped += 1
+
+                        logger.info(f"Saved [{shelf_label}] item #{category_counts[shelf_label]}: {raw_title[:45]}...")
+
+                except Exception as e:
+                    logger.error(f"Error scraping listing page {listing_url}: {e}")
+                    print(f"SCRAPER_EXCEPTION: {e} on {listing_url}")
+                    return
+
+            logger.info(f"Finished category [{shelf_label}]. Total items collected so far: {total_scraped}")
 
         await context.close()
 
-    # Save output to JSON file in datasets/
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        json.dump(all_results, f, indent=2, ensure_ascii=False)
-        
-    logger.info(f"Scraper run finished. Saved {len(all_results)} items to {OUTPUT_FILE}")
+    elapsed_minutes = (time.time() - start_time) / 60.0
+    print("\n" + "=" * 60)
+    print("           STAGE 2 SCRAPING COMPLETE")
+    print("=" * 60)
+    print(f"Total Runtime: {elapsed_minutes:.2f} minutes")
+    print(f"Total New Items Collected: {total_scraped}")
+    print("\nCOLLECTED ITEMS PER CATEGORY:")
+    for label, count in category_counts.items():
+        print(f"  - {label:<25}: {count} items")
+    print("=" * 60 + "\n")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(run_scraper())
