@@ -1,8 +1,9 @@
 """
 data_prep.py
 ------------
-Data cleaning and label mapping script for 'The Shelf' ML training pipeline.
-Processes raw Goodreads book details and maps genre tags to target shelf categories.
+Data cleaning, label mapping, and dataset merging script for 'The Shelf' ML training pipeline.
+Processes raw Goodreads book details, maps genre tags to target shelf categories,
+and merges primary labeled data with scraped supplemental data.
 """
 
 import ast
@@ -13,7 +14,9 @@ import pandas as pd
 BASE_DIR = Path(__file__).parent
 RAW_CSV_PATH = BASE_DIR / "datasets" / "raw" / "good_reads" / "Book_Details.csv"
 PROCESSED_DIR = BASE_DIR / "datasets" / "processed"
-PROCESSED_CSV_PATH = PROCESSED_DIR / "goodreads_labeled.csv"
+PRIMARY_CSV_PATH = PROCESSED_DIR / "goodreads_labeled.csv"
+SUPPLEMENTAL_CSV_PATH = PROCESSED_DIR / "goodreads_scraped_supplemental.csv"
+MERGED_CSV_PATH = PROCESSED_DIR / "goodreads_merged.csv"
 
 # Priority-ordered shelf mapping list
 SHELF_MAPPING = [
@@ -37,9 +40,7 @@ SHELF_MAPPING = [
 
 
 def map_genres_to_shelf(genres_raw) -> str:
-    """
-    Parses genres string and returns the first matching shelf category based on priority order.
-    """
+    """Parses genres string and returns the first matching shelf category based on priority order."""
     if pd.isna(genres_raw):
         return "Miscellaneous"
 
@@ -62,42 +63,63 @@ def map_genres_to_shelf(genres_raw) -> str:
     return "Miscellaneous"
 
 
-def main():
+def build_primary_dataset() -> pd.DataFrame:
+    """Cleans raw Goodreads CSV and creates primary labeled dataset."""
     print(f"Loading raw dataset from {RAW_CSV_PATH}...")
     df = pd.read_csv(RAW_CSV_PATH)
     total_initial_rows = len(df)
 
-    # 1. Map genres to shelf label
     df["shelf_label"] = df["genres"].apply(map_genres_to_shelf)
-
-    # 2. Build text column by concatenating title and details safely
     title_series = df["book_title"].fillna("").astype(str).str.strip()
     details_series = df["book_details"].fillna("").astype(str).str.strip()
 
     df["text"] = title_series + " " + details_series
     df["text"] = df["text"].str.strip()
 
-    # 3. Drop empty/null text rows
     df_clean = df[df["text"].str.len() > 0].copy()
-    total_final_rows = len(df_clean)
-
-    # 4. Save result
-    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     output_df = df_clean[["text", "shelf_label"]]
-    output_df.to_csv(PROCESSED_CSV_PATH, index=False)
-    print(f"Saved processed dataset to {PROCESSED_CSV_PATH}")
-    print()
 
-    # 5. Print summary
-    print("--- DATA PROCESSING SUMMARY ---")
-    print(f"Total rows before cleaning: {total_initial_rows}")
-    print(f"Total rows after cleaning:  {total_final_rows}")
-    print()
-    print("SHELF DISTRIBUTION (Label: Count):")
-    counts = df_clean["shelf_label"].value_counts()
+    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+    output_df.to_csv(PRIMARY_CSV_PATH, index=False)
+    print(f"Saved primary labeled dataset ({len(output_df)} rows) to {PRIMARY_CSV_PATH}")
+    return output_df
+
+
+def merge_datasets():
+    """Merges primary labeled dataset and supplemental scraped dataset into goodreads_merged.csv."""
+    if not PRIMARY_CSV_PATH.exists():
+        df_primary = build_primary_dataset()
+    else:
+        df_primary = pd.read_csv(PRIMARY_CSV_PATH)
+
+    if not SUPPLEMENTAL_CSV_PATH.exists():
+        print(f"Supplemental dataset {SUPPLEMENTAL_CSV_PATH} not found. Using primary dataset only.")
+        df_primary.to_csv(MERGED_CSV_PATH, index=False)
+        return
+
+    df_supp = pd.read_csv(SUPPLEMENTAL_CSV_PATH)
+    print(f"\n--- MERGING DATASETS ---")
+    print(f"Primary rows:      {len(df_primary)}")
+    print(f"Supplemental rows: {len(df_supp)}")
+
+    df_combined = pd.concat([df_primary, df_supp], ignore_index=True)
+    total_combined_rows = len(df_combined)
+
+    # Deduplicate text column
+    df_merged = df_combined.drop_duplicates(subset=["text"], keep="first").copy()
+    total_merged_rows = len(df_merged)
+    duplicates_dropped = total_combined_rows - total_merged_rows
+
+    df_merged.to_csv(MERGED_CSV_PATH, index=False)
+
+    print(f"Duplicates dropped during merge: {duplicates_dropped}")
+    print(f"Final merged dataset rows:      {total_merged_rows}")
+    print(f"Saved merged dataset to:        {MERGED_CSV_PATH}\n")
+    print("MERGED SHELF DISTRIBUTION (Label: Count):")
+    counts = df_merged["shelf_label"].value_counts()
     for label, count in counts.items():
-        print(f"{label}: {count}")
+        print(f"  - {label:<35}: {count}")
 
 
 if __name__ == "__main__":
-    main()
+    merge_datasets()

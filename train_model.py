@@ -4,7 +4,7 @@ train_model.py
 Machine Learning baseline model training script for 'The Shelf'.
 
 This script:
-  1. Loads clean Goodreads dataset from `datasets/processed/goodreads_labeled.csv`.
+  1. Loads clean Goodreads dataset from `datasets/processed/goodreads_merged.csv`.
   2. Splits dataset into 80/20 train/test sets using stratified sampling.
   3. Preprocesses and vectorizes text using TF-IDF (`TfidfVectorizer`).
   4. Trains a linear text classifier (`LinearSVC` with balanced class weights).
@@ -34,18 +34,18 @@ logger = logging.getLogger(__name__)
 
 # Paths
 BASE_DIR = Path(__file__).parent
-PROCESSED_DATA_PATH = BASE_DIR / "datasets" / "processed" / "goodreads_labeled.csv"
+PROCESSED_DATA_PATH = BASE_DIR / "datasets" / "processed" / "goodreads_merged.csv"
 OUTPUT_DIR = BASE_DIR / "output"
 MODEL_SAVE_PATH = OUTPUT_DIR / "shelf_classifier_pipeline.joblib"
 
 
 def load_dataset() -> pd.DataFrame:
     """
-    Loads labeled dataset from datasets/processed/goodreads_labeled.csv.
+    Loads labeled dataset from datasets/processed/goodreads_merged.csv.
     """
     logger.info(f"Loading dataset from {PROCESSED_DATA_PATH}...")
     if not PROCESSED_DATA_PATH.exists():
-        raise FileNotFoundError(f"Processed dataset not found at {PROCESSED_DATA_PATH}. Run data_prep.py first.")
+        raise FileNotFoundError(f"Merged dataset not found at {PROCESSED_DATA_PATH}. Run data_prep.py first.")
 
     df = pd.read_csv(PROCESSED_DATA_PATH)
     logger.info(f"Successfully loaded {len(df)} records across {df['shelf_label'].nunique()} categories.")
