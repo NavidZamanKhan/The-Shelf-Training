@@ -1,28 +1,27 @@
 """
 train_model.py
 --------------
-Machine Learning model training script for 'The Shelf'.
+Machine Learning baseline model training script for 'The Shelf'.
 
 This script:
-  1. Loads processed datasets from `datasets/`.
-  2. Extracts feature text (title + description) and target shelf categories.
+  1. Loads clean Goodreads dataset from `datasets/processed/goodreads_labeled.csv`.
+  2. Splits dataset into 80/20 train/test sets using stratified sampling.
   3. Preprocesses and vectorizes text using TF-IDF (`TfidfVectorizer`).
-  4. Trains a text classifier (Linear SVM / Naive Bayes).
-  5. Evaluates model performance (Accuracy, Classification Report).
-  6. Saves trained model artifacts into `output/`.
+  4. Trains a linear text classifier (`LinearSVC` with balanced class weights).
+  5. Evaluates model performance (Accuracy, full Classification Report, Confusion Matrix, and 5 lowest F1 categories).
+  6. Saves trained pipeline artifact to `output/shelf_classifier_pipeline.joblib`.
+  7. Performs sanity check predictions on sample text prompts.
 """
 
-import json
 import logging
 from pathlib import Path
-from typing import Tuple, List, Dict, Any
+from typing import Tuple, Dict, Any, List
 
 import pandas as pd
 import joblib
 from sklearn.model_selection import train_test_split
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.svm import LinearSVC
-from sklearn.naive_bayes import MultinomialNB
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import classification_report, accuracy_score, confusion_matrix
 
@@ -35,130 +34,104 @@ logger = logging.getLogger(__name__)
 
 # Paths
 BASE_DIR = Path(__file__).parent
-DATASETS_DIR = BASE_DIR / "datasets"
+PROCESSED_DATA_PATH = BASE_DIR / "datasets" / "processed" / "goodreads_labeled.csv"
 OUTPUT_DIR = BASE_DIR / "output"
 MODEL_SAVE_PATH = OUTPUT_DIR / "shelf_classifier_pipeline.joblib"
 
 
-def load_datasets() -> pd.DataFrame:
+def load_dataset() -> pd.DataFrame:
     """
-    Loads and merges all JSON/CSV datasets from the `datasets/` directory.
-    Falls back to a synthetic dataset if no collected data is available yet.
-    
-    Returns:
-        pd.DataFrame: DataFrame containing 'text' and 'shelf_label' columns.
+    Loads labeled dataset from datasets/processed/goodreads_labeled.csv.
     """
-    logger.info("Loading training datasets...")
-    records: List[Dict[str, Any]] = []
+    logger.info(f"Loading dataset from {PROCESSED_DATA_PATH}...")
+    if not PROCESSED_DATA_PATH.exists():
+        raise FileNotFoundError(f"Processed dataset not found at {PROCESSED_DATA_PATH}. Run data_prep.py first.")
 
-    # Read all JSON files in datasets/
-    json_files = list(DATASETS_DIR.glob("*.json"))
-    for file_path in json_files:
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    records.extend(data)
-            logger.info(f"Loaded {len(data)} records from {file_path.name}")
-        except Exception as e:
-            logger.error(f"Failed to load dataset {file_path}: {e}")
-
-    if records:
-        df = pd.DataFrame(records)
-        # Construct unified feature text
-        if "description" in df.columns and "title" in df.columns:
-            df["text"] = df["title"].fillna("") + " " + df["description"].fillna("")
-        elif "description" in df.columns:
-            df["text"] = df["description"]
-        else:
-            df["text"] = df["title"]
-
-        # Ensure label column exists
-        if "shelf_label" not in df.columns and "genre" in df.columns:
-            df["shelf_label"] = df["genre"]
-            
-        return df[["text", "shelf_label"]].dropna()
-
-    # Fallback synthetic placeholder dataset for initial testing
-    logger.warning("No dataset files found in datasets/. Using synthetic placeholder dataset.")
-    placeholder_data = [
-        {"text": "Introduction to Quantum Physics and Thermodynamics", "shelf_label": "Science"},
-        {"text": "Astrophysics for People in a Hurry Cosmology Space", "shelf_label": "Science"},
-        {"text": "Clean Code Principles of Agile Software Craftsmanship Python Java", "shelf_label": "Technology"},
-        {"text": "Designing Data Intensive Applications Distributed Systems", "shelf_label": "Technology"},
-        {"text": "The Rise and Fall of the Third Reich World War History", "shelf_label": "History"},
-        {"text": "Sapiens A Brief History of Humankind Civilizations", "shelf_label": "History"},
-        {"text": "Dune Frank Herbert Epic Sci-Fi Planet Arrakis Spice", "shelf_label": "Sci-Fi"},
-        {"text": "Foundation Isaac Asimov Galactic Empire Psychohistory", "shelf_label": "Sci-Fi"},
-    ] * 5  # Duplicate to provide enough samples for train/test split
-    
-    return pd.DataFrame(placeholder_data)
+    df = pd.read_csv(PROCESSED_DATA_PATH)
+    logger.info(f"Successfully loaded {len(df)} records across {df['shelf_label'].nunique()} categories.")
+    return df
 
 
-def build_pipeline(classifier_type: str = "linear_svm") -> Pipeline:
+def build_pipeline() -> Pipeline:
     """
-    Constructs an end-to-end Scikit-Learn Pipeline with TF-IDF vectorization and classifier.
-    
-    Args:
-        classifier_type (str): 'linear_svm' (LinearSVC) or 'naive_bayes' (MultinomialNB).
-        
-    Returns:
-        Pipeline: Scikit-learn Pipeline object.
+    Constructs an end-to-end Scikit-Learn Pipeline with TF-IDF vectorization and LinearSVC.
     """
-    logger.info(f"Building pipeline with TF-IDF + {classifier_type}...")
-    
+    logger.info("Building TF-IDF + LinearSVC pipeline...")
     vectorizer = TfidfVectorizer(
-        max_features=5000,
+        max_features=10000,
         ngram_range=(1, 2),
-        stop_words="english"
+        stop_words="english",
+        sublinear_tf=True
     )
 
-    if classifier_type == "linear_svm":
-        classifier = LinearSVC(C=1.0, random_state=42)
-    elif classifier_type == "naive_bayes":
-        classifier = MultinomialNB(alpha=0.1)
-    else:
-        raise ValueError(f"Unsupported classifier type: {classifier_type}")
+    classifier = LinearSVC(
+        C=1.0,
+        class_weight="balanced",
+        random_state=42
+    )
 
     pipeline = Pipeline([
         ("tfidf", vectorizer),
         ("classifier", classifier)
     ])
-    
+
     return pipeline
 
 
 def train_and_evaluate(df: pd.DataFrame) -> Tuple[Pipeline, float]:
     """
-    Splits dataset into train/test sets, trains model pipeline, and logs evaluation metrics.
-    
-    Args:
-        df (pd.DataFrame): Input dataset with 'text' and 'shelf_label' columns.
-        
-    Returns:
-        Tuple[Pipeline, float]: Trained pipeline and test accuracy.
+    Splits dataset into train/test sets, trains model pipeline, and prints diagnostic evaluation metrics.
     """
-    X = df["text"]
-    y = df["shelf_label"]
+    X = df["text"].astype(str)
+    y = df["shelf_label"].astype(str)
 
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y if len(y.unique()) > 1 else None
+        X, y, test_size=0.20, random_state=42, stratify=y
     )
 
     logger.info(f"Dataset split: {len(X_train)} train samples, {len(X_test)} test samples.")
 
-    pipeline = build_pipeline(classifier_type="linear_svm")
-    
-    logger.info("Fitting model pipeline...")
+    pipeline = build_pipeline()
+
+    logger.info("Fitting model pipeline on training set...")
     pipeline.fit(X_train, y_train)
 
+    logger.info("Evaluating model on test set...")
     y_pred = pipeline.predict(X_test)
     accuracy = accuracy_score(y_test, y_pred)
 
-    logger.info(f"--- Model Evaluation ---")
-    logger.info(f"Accuracy: {accuracy:.4f}")
-    logger.info("\nClassification Report:\n" + classification_report(y_test, y_pred, zero_division=0))
-    logger.info("\nConfusion Matrix:\n" + str(confusion_matrix(y_test, y_pred)))
+    print("\n" + "=" * 60)
+    print("               MODEL DIAGNOSTIC EVALUATION")
+    print("=" * 60)
+    print(f"Overall Test Accuracy: {accuracy:.4f} ({accuracy * 100:.2f}%)\n")
+
+    print("FULL CLASSIFICATION REPORT:")
+    report_text = classification_report(y_test, y_pred, zero_division=0)
+    print(report_text)
+
+    # Calculate and print 5 lowest F1-score categories
+    report_dict = classification_report(y_test, y_pred, output_dict=True, zero_division=0)
+    category_f1s = []
+    for label, metrics in report_dict.items():
+        if isinstance(metrics, dict) and "f1-score" in metrics and label not in ["accuracy", "macro avg", "weighted avg"]:
+            category_f1s.append((label, metrics["f1-score"], metrics["support"]))
+
+    category_f1s.sort(key=lambda x: x[1])
+    lowest_5 = category_f1s[:5]
+
+    print("\n" + "-" * 60)
+    print("5 LOWEST F1-SCORE SHELF CATEGORIES (Diagnostic Warning):")
+    print("-" * 60)
+    for rank, (label, f1, support) in enumerate(lowest_5, start=1):
+        print(f"  {rank}. {label:<35} | F1-Score: {f1:.4f} | Test Support: {support}")
+    print("-" * 60 + "\n")
+
+    print("FULL CONFUSION MATRIX:")
+    labels = sorted(y.unique())
+    cm = confusion_matrix(y_test, y_pred, labels=labels)
+    cm_df = pd.DataFrame(cm, index=labels, columns=labels)
+    print(cm_df.to_string())
+    print("\n" + "=" * 60 + "\n")
 
     return pipeline, accuracy
 
@@ -166,31 +139,53 @@ def train_and_evaluate(df: pd.DataFrame) -> Tuple[Pipeline, float]:
 def save_model(pipeline: Pipeline, save_path: Path) -> None:
     """
     Saves trained pipeline artifact to disk using joblib.
-    
-    Args:
-        pipeline (Pipeline): Trained scikit-learn pipeline.
-        save_path (Path): Destination file path.
     """
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     joblib.dump(pipeline, save_path)
     logger.info(f"Successfully saved trained model pipeline to {save_path}")
 
 
+def run_sanity_checks(pipeline: Pipeline) -> None:
+    """
+    Runs sample inference predictions on synthetic text inputs.
+    """
+    # Sanity check only, not a substitute for the confusion matrix
+    sample_prompts = [
+        "A dark wizard threatens the magical kingdom with ancient dark spells and dragons.",
+        "The history of World War II and European political alliances in the 20th century.",
+        "A detective investigates a mysterious murder mystery in a foggy coastal town.",
+        "A collection of romantic poems expressing deep love, heartbreak, and emotional devotion.",
+        "Deep philosophical thoughts on human consciousness, morality, and the nature of reality."
+    ]
+
+    print("SANITY CHECK INFERENCE PREDICTIONS:")
+    print("# Sanity check only, not a substitute for the confusion matrix")
+    print("-" * 60)
+    predictions = pipeline.predict(sample_prompts)
+    for prompt, pred in zip(sample_prompts, predictions):
+        print(f"Input: \"{prompt[:65]}...\"")
+        print(f"Predicted Shelf: [{pred}]\n")
+    print("-" * 60 + "\n")
+
+
 def main() -> None:
     """
     Main training execution function.
     """
-    logger.info("Starting 'The Shelf' model training pipeline...")
-    
-    # 1. Load data
-    df = load_datasets()
-    logger.info(f"Total dataset size: {len(df)} samples across {df['shelf_label'].nunique()} shelf categories.")
+    logger.info("Starting 'The Shelf' baseline model training pipeline...")
+
+    # 1. Load clean dataset
+    df = load_dataset()
 
     # 2. Train & Evaluate
     pipeline, accuracy = train_and_evaluate(df)
 
     # 3. Export fitted pipeline artifact
     save_model(pipeline, MODEL_SAVE_PATH)
+
+    # 4. Sanity check predictions
+    run_sanity_checks(pipeline)
+
     logger.info("Training pipeline completed successfully.")
 
 
