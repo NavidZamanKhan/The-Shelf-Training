@@ -53,16 +53,16 @@ def export_vocabulary_and_labels(pipeline: Any) -> None:
         tfidf = pipeline.named_steps["tfidf"]
         classifier = pipeline.named_steps["classifier"]
 
-        vocab = tfidf.vocabulary_  # word -> feature_index mapping
-        idf_weights = tfidf.idf_.tolist()
-        classes = classifier.classes_.tolist()
+        vocab = {str(k): int(v) for k, v in tfidf.vocabulary_.items()}
+        idf_weights = [float(x) for x in tfidf.idf_]
+        classes = [str(c) for c in classifier.classes_]
 
         metadata = {
             "classes": classes,
             "vocabulary": vocab,
             "idf": idf_weights,
-            "max_features": tfidf.max_features,
-            "ngram_range": list(tfidf.ngram_range),
+            "max_features": int(tfidf.max_features) if tfidf.max_features else None,
+            "ngram_range": [int(n) for n in tfidf.ngram_range],
             "stop_words": "english"
         }
 

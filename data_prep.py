@@ -24,8 +24,7 @@ SHELF_MAPPING = [
     ("Horror", ["Horror", "Supernatural"]),
     ("Romance", ["Romance", "Contemporary Romance", "Paranormal Romance", "Chick Lit", "New Adult"]),
     ("Science Fiction", ["Science Fiction", "Science Fiction Fantasy", "Dystopia"]),
-    ("Mystery", ["Mystery", "Mystery Thriller", "Suspense"]),
-    ("Thriller", ["Thriller", "Crime"]),
+    ("Mystery", ["Mystery", "Mystery Thriller", "Suspense", "Thriller", "Crime"]),
     ("Historical Fiction", ["Historical Fiction", "Historical", "War"]),
     ("Classic Literature", ["Classics", "Literary Fiction", "British Literature", "American"]),
     ("Biography & Memoir", ["Biography", "Memoir"]),
@@ -87,10 +86,8 @@ def build_primary_dataset() -> pd.DataFrame:
 
 def merge_datasets():
     """Merges primary labeled dataset and supplemental scraped dataset into goodreads_merged.csv."""
-    if not PRIMARY_CSV_PATH.exists():
-        df_primary = build_primary_dataset()
-    else:
-        df_primary = pd.read_csv(PRIMARY_CSV_PATH)
+    # Always rebuild primary dataset to apply updated SHELF_MAPPING
+    df_primary = build_primary_dataset()
 
     if not SUPPLEMENTAL_CSV_PATH.exists():
         print(f"Supplemental dataset {SUPPLEMENTAL_CSV_PATH} not found. Using primary dataset only.")
@@ -98,6 +95,9 @@ def merge_datasets():
         return
 
     df_supp = pd.read_csv(SUPPLEMENTAL_CSV_PATH)
+    # Relabel scraped Thriller rows in supplemental dataset to Mystery
+    df_supp["shelf_label"] = df_supp["shelf_label"].replace({"Thriller": "Mystery"})
+
     print(f"\n--- MERGING DATASETS ---")
     print(f"Primary rows:      {len(df_primary)}")
     print(f"Supplemental rows: {len(df_supp)}")

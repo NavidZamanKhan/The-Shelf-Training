@@ -21,7 +21,7 @@ import pandas as pd
 import joblib
 from sklearn.model_selection import train_test_split
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.svm import LinearSVC
+from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import classification_report, accuracy_score, confusion_matrix
 
@@ -54,9 +54,9 @@ def load_dataset() -> pd.DataFrame:
 
 def build_pipeline() -> Pipeline:
     """
-    Constructs an end-to-end Scikit-Learn Pipeline with TF-IDF vectorization and LinearSVC.
+    Constructs an end-to-end Scikit-Learn Pipeline with TF-IDF vectorization and LogisticRegression.
     """
-    logger.info("Building TF-IDF + LinearSVC pipeline...")
+    logger.info("Building TF-IDF + LogisticRegression pipeline...")
     vectorizer = TfidfVectorizer(
         max_features=10000,
         ngram_range=(1, 2),
@@ -64,9 +64,11 @@ def build_pipeline() -> Pipeline:
         sublinear_tf=True
     )
 
-    classifier = LinearSVC(
+    classifier = LogisticRegression(
         C=1.0,
         class_weight="balanced",
+        solver="lbfgs",
+        max_iter=1000,
         random_state=42
     )
 
