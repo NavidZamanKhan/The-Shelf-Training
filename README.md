@@ -1,45 +1,65 @@
-# The Shelf — Training Pipeline (`the-shelf-training`)
+# The Shelf Training Pipeline (`The-Shelf-Training`)
 
-Machine Learning training pipeline for **The Shelf** — a Flutter mobile app that organizes books, PDFs, and documents into auto-sorted shelves using an on-device text classifier.
+Machine learning training and export pipeline for **The Shelf**, a mobile application designed to organize books, documents, and digital media into auto-categorized shelves using on-device text classification.
 
 ---
 
-## 📁 Repository Structure
+## Technical Overview
+
+The pipeline processes book metadata (titles and descriptions) to classify items across 16 target shelf categories:
+
+- **Classifier Architecture**: `TfidfVectorizer` (sublinear TF scaling, max 10,000 features, 1–2 n-grams) coupled with `LogisticRegression` (`C=1.0`, `class_weight='balanced'`, `solver='lbfgs'`).
+- **Category Mapping**: 16 target shelf categories following the strategic integration of closely adjacent genre tags (such as merging _Thriller_ into _Mystery_).
+- **On-Device Target**: Scikit-learn pipeline serialization via `joblib`, JSON metadata export (`tfidf_vocab.json`), and ONNX model conversion (`shelf_classifier.onnx`) for cross-platform Flutter mobile deployment.
+
+---
+
+## Repository Structure
 
 ```text
 the-shelf-training/
-├── .gitignore
-├── requirements.txt
-├── README.md
-├── scrape_data.py        # Web scraper (Playwright + stealth) for non-API web sources (Goodreads)
-├── fetch_api_data.py     # Data fetcher for free public APIs (Open Library, Jikan / MyAnimeList)
-├── train_model.py        # Model training pipeline (TF-IDF + Linear SVM / Naive Bayes)
-├── export_model.py       # Model exporter converting trained model to ONNX & TFLite for Flutter
-├── datasets/             # Directory for storing raw & processed dataset JSON/CSV files
-│   └── .gitkeep
-└── output/               # Directory for trained models, vocabularies, and exported .tflite files
-    └── .gitkeep
+├── data_prep.py           # Label mapping, genre parsing, and dataset merging engine
+├── train_model.py         # Production model training and diagnostic evaluation pipeline
+├── tune_experiments.py    # Non-destructive hyperparameter and model experiment runner
+├── export_model.py        # Model serialization, vocabulary extraction, and ONNX export script
+├── fetch_api_data.py      # Public API data ingest script (Open Library, Jikan / MyAnimeList)
+├── scrape_data.py         # Web scraping utility (Playwright + stealth) for supplemental data
+├── requirements.txt       # Python environment dependencies
+├── datasets/
+│   ├── raw/               # Raw source data CSV files
+│   └── processed/         # Labeled and merged dataset artifacts (goodreads_merged.csv)
+└── output/
+    ├── shelf_classifier_pipeline.joblib   # Serialized production pipeline
+    ├── tfidf_vocab.json                  # Exported TF-IDF vocabulary & class labels
+    ├── shelf_classifier.onnx             # Exported ONNX model format
+    └── experiments/                      # Hyperparameter tuning CSV reports
 ```
 
 ---
 
-## 🛠️ Setup & Installation
+## Setup and Installation
 
-### 1. Create and Activate Virtual Environment
+### 1. Environment Initialization
+
+Create and activate a isolated Python 3 virtual environment:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv venv
+source venv/bin/activate
 ```
 
-### 2. Install Python Dependencies
+### 2. Dependency Installation
+
+Upgrade `pip` and install all required machine learning and web scraping dependencies:
 
 ```bash
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### 3. Install Playwright Browsers (for web scraping)
+### 3. Playwright Browser Installation (Optional for Web Scraping)
+
+If running supplemental web scraping scripts:
 
 ```bash
 playwright install chromium
@@ -47,48 +67,57 @@ playwright install chromium
 
 ---
 
-## 🚀 Pipeline Workflow
+## Pipeline Execution Workflow
 
-Run the pipeline steps in the following order:
+Execute the workflow steps sequentially:
 
-### Step 1: Data Collection
+### Step 1: Data Preparation and Merging
 
-Fetch structured book and document data from public APIs or web sources:
+Clean raw Goodreads data, execute priority-ordered genre tag mapping, and merge primary data with supplemental sources:
 
 ```bash
-# Option A: Call free public APIs (Open Library & Jikan / MyAnimeList) [Recommended]
-python fetch_api_data.py
-
-# Option B: Scrape web sources (e.g., Goodreads) with Playwright stealth
-python scrape_data.py
+python data_prep.py
 ```
 
-Collected dataset files are saved to `datasets/`.
+Outputs the clean, merged dataset artifact to `datasets/processed/goodreads_merged.csv` across 16 target shelf categories.
 
-### Step 2: Train Classifier
+### Step 2: Hyperparameter Tuning Experiments (Optional)
 
-Train the text classification model (TF-IDF vectorizer + Linear SVM) on collected data:
+Run multi-variant model and parameter evaluation without altering production artifacts:
+
+```bash
+python tune_experiments.py
+```
+
+Evaluates 6 configuration variants (Baseline LinearSVC, C-regularization adjustments, n-gram ranges, vocabulary sizes, MultinomialNB, and LogisticRegression) and writes comparative results to `output/experiments/tuning_summary.csv`.
+
+### Step 3: Train Production Model
+
+Train the production `TfidfVectorizer` + `LogisticRegression` pipeline on the merged dataset:
 
 ```bash
 python train_model.py
 ```
 
-Outputs the trained model pipeline (`shelf_classifier_pipeline.joblib`) into `output/`.
+Generates diagnostic evaluation metrics (Overall Accuracy, Full Classification Report, 16-Category Confusion Matrix, and 5 Lowest F1 Warning List) and serializes the trained pipeline artifact to `output/shelf_classifier_pipeline.joblib`.
 
-### Step 3: Export to Mobile (TFLite)
+### Step 4: Export Model Metadata and ONNX Representation
 
-Convert and package the model for mobile on-device inference:
+Extract feature weights, class label ordering, and export to ONNX for mobile client inference:
 
 ```bash
 python export_model.py
 ```
 
-Generates ONNX intermediate models (`shelf_classifier.onnx`), vocabulary JSON metadata (`tfidf_vocab.json`), and mobile TFLite models (`shelf_classifier.tflite`) in `output/`.
+Generates:
+
+1. `output/tfidf_vocab.json`: Class label ordering, TF-IDF feature vocabulary index, and IDF weights for Flutter client vectorization.
+2. `output/shelf_classifier.onnx`: Intermediate ONNX format for on-device inference engines.
 
 ---
 
-## 📱 Mobile Integration (Flutter)
+## Mobile App Integration (Flutter)
 
-1. Copy `output/shelf_classifier.tflite` and `output/tfidf_vocab.json` into your Flutter app's `assets/` directory.
-2. Use [`tflite_flutter`](https://pub.dev/packages/tflite_flutter) to load the TFLite model on iOS and Android.
-3. Preprocess PDF text / document metadata using the exported `tfidf_vocab.json` dictionary before feeding input tensors to the model.
+1. Include `output/tfidf_vocab.json` and `output/shelf_classifier.onnx` (or compiled TFLite models) in the mobile client `assets/` directory.
+2. Vectorize input document metadata using the exported vocabulary dictionary.
+3. Feed input feature arrays to the on-device inference runtime (`tflite_flutter` or ONNX runtime) to receive shelf category predictions and confidence distributions.
