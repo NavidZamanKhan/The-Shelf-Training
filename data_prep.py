@@ -17,6 +17,7 @@ PROCESSED_DIR = BASE_DIR / "datasets" / "processed"
 PRIMARY_CSV_PATH = PROCESSED_DIR / "goodreads_labeled.csv"
 SUPPLEMENTAL_CSV_PATH = PROCESSED_DIR / "goodreads_scraped_supplemental.csv"
 JIKAN_CSV_PATH = PROCESSED_DIR / "jikan_anime_manga.csv"
+ROKOMARI_CSV_PATH = PROCESSED_DIR / "rokomari_bangla.csv"
 MERGED_CSV_PATH = PROCESSED_DIR / "goodreads_merged.csv"
 
 # Priority-ordered shelf mapping list
@@ -105,6 +106,11 @@ def merge_datasets():
         df_jikan = pd.read_csv(JIKAN_CSV_PATH)
         dataframes_to_merge.append(df_jikan)
         print(f"Anime & Manga rows: {len(df_jikan)}")
+
+    if ROKOMARI_CSV_PATH.exists():
+        df_rokomari = pd.read_csv(ROKOMARI_CSV_PATH)
+        dataframes_to_merge.append(df_rokomari)
+        print(f"Rokomari Bangla rows: {len(df_rokomari)}")
 
     df_combined = pd.concat(dataframes_to_merge, ignore_index=True)
     total_combined_rows = len(df_combined)

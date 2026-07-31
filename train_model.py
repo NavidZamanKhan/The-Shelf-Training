@@ -157,7 +157,10 @@ def run_sanity_checks(pipeline: Pipeline) -> None:
         "The history of World War II and European political alliances in the 20th century.",
         "A detective investigates a mysterious murder mystery in a foggy coastal town.",
         "A collection of romantic poems expressing deep love, heartbreak, and emotional devotion.",
-        "Deep philosophical thoughts on human consciousness, morality, and the nature of reality."
+        "Deep philosophical thoughts on human consciousness, morality, and the nature of reality.",
+        "একটি ভয়ংকর পুরনো রাজবাড়িতে অশরীরী ভূতের রহস্যময় উপদ্রব ও আতঙ্কের গল্প...",
+        "দুটি তরুণ হৃদয়ের গভীর ভালোবাসা, প্রেম, ব্যাকুলতা ও আবেগঘন বিরহের অনুভূতি...",
+        "ভবিষ্যতের মহাকাশ অভিযান, ভিনগ্রহের প্রাণী ও রোবটের বৈজ্ঞানিক কল্পকাহিনী..."
     ]
 
     print("SANITY CHECK INFERENCE PREDICTIONS:")
