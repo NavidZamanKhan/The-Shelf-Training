@@ -16,6 +16,7 @@ RAW_CSV_PATH = BASE_DIR / "datasets" / "raw" / "good_reads" / "Book_Details.csv"
 PROCESSED_DIR = BASE_DIR / "datasets" / "processed"
 PRIMARY_CSV_PATH = PROCESSED_DIR / "goodreads_labeled.csv"
 SUPPLEMENTAL_CSV_PATH = PROCESSED_DIR / "goodreads_scraped_supplemental.csv"
+JIKAN_CSV_PATH = PROCESSED_DIR / "jikan_anime_manga.csv"
 MERGED_CSV_PATH = PROCESSED_DIR / "goodreads_merged.csv"
 
 # Priority-ordered shelf mapping list
@@ -35,6 +36,7 @@ SHELF_MAPPING = [
     ("Poetry", ["Poetry"]),
     ("Humor", ["Humor"]),
     ("Graphic Novels", ["Graphic Novels"]),
+    ("Anime & Manga", ["Manga", "Anime", "Light Novel"]),
 ]
 
 
@@ -85,24 +87,26 @@ def build_primary_dataset() -> pd.DataFrame:
 
 
 def merge_datasets():
-    """Merges primary labeled dataset and supplemental scraped dataset into goodreads_merged.csv."""
+    """Merges primary labeled dataset, supplemental scraped dataset, and Jikan anime/manga dataset into goodreads_merged.csv."""
     # Always rebuild primary dataset to apply updated SHELF_MAPPING
     df_primary = build_primary_dataset()
-
-    if not SUPPLEMENTAL_CSV_PATH.exists():
-        print(f"Supplemental dataset {SUPPLEMENTAL_CSV_PATH} not found. Using primary dataset only.")
-        df_primary.to_csv(MERGED_CSV_PATH, index=False)
-        return
-
-    df_supp = pd.read_csv(SUPPLEMENTAL_CSV_PATH)
-    # Relabel scraped Thriller rows in supplemental dataset to Mystery
-    df_supp["shelf_label"] = df_supp["shelf_label"].replace({"Thriller": "Mystery"})
+    dataframes_to_merge = [df_primary]
 
     print(f"\n--- MERGING DATASETS ---")
     print(f"Primary rows:      {len(df_primary)}")
-    print(f"Supplemental rows: {len(df_supp)}")
 
-    df_combined = pd.concat([df_primary, df_supp], ignore_index=True)
+    if SUPPLEMENTAL_CSV_PATH.exists():
+        df_supp = pd.read_csv(SUPPLEMENTAL_CSV_PATH)
+        df_supp["shelf_label"] = df_supp["shelf_label"].replace({"Thriller": "Mystery"})
+        dataframes_to_merge.append(df_supp)
+        print(f"Supplemental rows: {len(df_supp)}")
+
+    if JIKAN_CSV_PATH.exists():
+        df_jikan = pd.read_csv(JIKAN_CSV_PATH)
+        dataframes_to_merge.append(df_jikan)
+        print(f"Anime & Manga rows: {len(df_jikan)}")
+
+    df_combined = pd.concat(dataframes_to_merge, ignore_index=True)
     total_combined_rows = len(df_combined)
 
     # Deduplicate text column
