@@ -3,14 +3,14 @@ fetch_api_data.py
 -------------------
 API Data Fetcher for 'The Shelf' ML training pipeline.
 
-Fetches manga and anime metadata from Jikan API v4 (unofficial MyAnimeList API):
-  1. Manga / Light Novels (/v4/manga) ~ 70% target (~490 entries)
-  2. Anime (/v4/anime) ~ 30% target (~210 entries)
+Fetches manga and anime metadata from public REST APIs (Jikan API v4 / Kitsu API fallback):
+  1. Manga / Light Novels (~70% target: ~490 entries)
+  2. Anime (~30% target: ~210 entries)
 
 Applies:
   - Cross-dataset title deduplication against existing Goodreads datasets
-  - Text cleaning (stripping MAL rewrite notes, whitespace normalization)
-  - Rate limiting (1.0s delay, HTTP 429/503 exponential backoff retry)
+  - Text cleaning (stripping MAL/Kitsu rewrite notes, whitespace normalization)
+  - Rate limiting & automatic failover for high reliability
 
 Outputs directly to `datasets/processed/jikan_anime_manga.csv` with schema (text, shelf_label="Anime & Manga").
 """
@@ -46,7 +46,9 @@ SUPPLEMENTAL_CSV_PATH = PROCESSED_DIR / "goodreads_scraped_supplemental.csv"
 JIKAN_MANGA_URL = "https://api.jikan.moe/v4/manga"
 JIKAN_ANIME_URL = "https://api.jikan.moe/v4/anime"
 
-# Target Shelf Label
+KITSU_MANGA_URL = "https://kitsu.io/api/edge/manga"
+KITSU_ANIME_URL = "https://kitsu.io/api/edge/anime"
+
 SHELF_LABEL = "Anime & Manga"
 
 
@@ -58,7 +60,7 @@ def normalize_string(text: str) -> str:
 
 
 def load_existing_titles() -> Set[str]:
-    """Loads normalized titles and text prefixes from existing Goodreads datasets to prevent cross-dataset duplication."""
+    """Loads normalized titles and text signatures from existing Goodreads datasets to prevent cross-dataset duplication."""
     existing_normalized: Set[str] = set()
     csv_paths = [MERGED_CSV_PATH, PRIMARY_CSV_PATH, SUPPLEMENTAL_CSV_PATH]
 
@@ -68,7 +70,6 @@ def load_existing_titles() -> Set[str]:
                 df = pd.read_csv(path)
                 logger.info(f"Loading existing dataset for deduplication: {path.name} ({len(df)} rows)")
                 for text_val in df["text"].dropna():
-                    # Extract title prefix (first 100 chars or first sentence/space)
                     clean_t = str(text_val).strip()
                     norm = normalize_string(clean_t[:100])
                     if norm:
@@ -81,38 +82,134 @@ def load_existing_titles() -> Set[str]:
 
 
 def clean_synopsis(synopsis_raw: str) -> str:
-    """Cleans synopsis text by removing MAL editorial notes and extra whitespace."""
+    """Cleans synopsis text by removing MAL/Kitsu editorial notes and extra whitespace."""
     if not synopsis_raw:
         return ""
 
     text = str(synopsis_raw)
-    # Remove MAL Rewrite editorial credit tags
     text = re.sub(r"\[Written by MAL Rewrite\]", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\(Source: [^\)]+\)", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\[Source: [^\]]+\]", "", text, flags=re.IGNORECASE)
-
-    # Collapse multiple whitespace / newlines
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
 
-def fetch_jikan_endpoint(
+def fetch_kitsu_data(
     endpoint_url: str,
     target_count: int,
     media_type: str,
     existing_signatures: Set[str]
 ) -> Tuple[List[Dict[str, str]], int, int, int]:
     """
-    Fetches items from a Jikan API v4 endpoint with rate-limiting, retries, and deduplication.
-
-    Returns:
-        Tuple containing:
-          - fetched items list
-          - skipped cross-dataset duplicates count
-          - skipped short/empty synopses count
-          - 429/503 retry count
+    Fetches items from Kitsu REST API as primary/fallback source.
     """
-    logger.info(f"Starting fetch for {media_type} (Target: ~{target_count} entries)...")
+    logger.info(f"Fetching {media_type} via Kitsu API (Target: ~{target_count} entries)...")
+    results: List[Dict[str, str]] = []
+    seen_local_titles: Set[str] = set()
+
+    skipped_cross_duplicates = 0
+    skipped_short_synopsis = 0
+    retry_count = 0
+    offset = 0
+    limit = 20
+
+    headers = {"Accept": "application/vnd.api+json"}
+
+    while len(results) < target_count and offset <= 1000:
+        params = {
+            "page[limit]": limit,
+            "page[offset]": offset,
+            "sort": "-userCount"
+        }
+
+        response = None
+        for attempt in range(1, 4):
+            try:
+                response = requests.get(endpoint_url, params=params, headers=headers, timeout=10)
+                if response.status_code in [429, 503, 504]:
+                    logger.warning(f"Kitsu HTTP {response.status_code} at offset {offset}. Retrying in 4s...")
+                    retry_count += 1
+                    time.sleep(4.0)
+                    continue
+                response.raise_for_status()
+                break
+            except requests.RequestException as e:
+                logger.warning(f"Kitsu request error at offset {offset} (attempt {attempt}): {e}")
+                retry_count += 1
+                time.sleep(4.0)
+
+        if response is None or response.status_code != 200:
+            logger.error(f"Failed to fetch Kitsu offset {offset} for {media_type}. Skipping offset.")
+            offset += limit
+            time.sleep(1.0)
+            continue
+
+        data = response.json()
+        items = data.get("data", [])
+        if not items:
+            logger.info(f"No more Kitsu items returned for {media_type} at offset {offset}.")
+            break
+
+        for item in items:
+            attributes = item.get("attributes", {})
+            title_canonical = attributes.get("canonicalTitle", "")
+            titles_dict = attributes.get("titles", {}) or {}
+            title_english = titles_dict.get("en") or titles_dict.get("en_jp") or title_canonical
+            synopsis_raw = attributes.get("synopsis", "") or ""
+
+            cleaned_syn = clean_synopsis(synopsis_raw)
+
+            if len(cleaned_syn) < 50:
+                skipped_short_synopsis += 1
+                continue
+
+            norm_canon = normalize_string(title_canonical)
+            norm_eng = normalize_string(title_english)
+
+            # Check cross-dataset deduplication against existing Goodreads data
+            is_cross_dup = False
+            for sig in [norm_canon, norm_eng]:
+                if sig and any(sig in existing_sig for existing_sig in existing_signatures if len(sig) > 5):
+                    is_cross_dup = True
+                    break
+
+            if is_cross_dup:
+                logger.info(f"Skipping cross-dataset duplicate: '{title_english}'")
+                skipped_cross_duplicates += 1
+                continue
+
+            if norm_canon in seen_local_titles or norm_eng in seen_local_titles:
+                continue
+
+            seen_local_titles.add(norm_canon)
+            seen_local_titles.add(norm_eng)
+
+            combined_text = f"{title_english}. {cleaned_syn}"
+            results.append({
+                "text": combined_text,
+                "shelf_label": SHELF_LABEL
+            })
+
+            if len(results) >= target_count:
+                break
+
+        offset += limit
+        time.sleep(0.5)
+
+    logger.info(f"Completed Kitsu {media_type} fetch: {len(results)} items collected.")
+    return results, skipped_cross_duplicates, skipped_short_synopsis, retry_count
+
+
+def fetch_jikan_data(
+    endpoint_url: str,
+    target_count: int,
+    media_type: str,
+    existing_signatures: Set[str]
+) -> Tuple[List[Dict[str, str]], int, int, int]:
+    """
+    Fetches items from Jikan API v4.
+    """
+    logger.info(f"Fetching {media_type} via Jikan API (Target: ~{target_count} entries)...")
     results: List[Dict[str, str]] = []
     seen_local_titles: Set[str] = set()
 
@@ -132,11 +229,11 @@ def fetch_jikan_endpoint(
         response = None
         for attempt in range(1, 4):
             try:
-                logger.info(f"Fetching {media_type} page {page} (attempt {attempt})...")
+                logger.info(f"Fetching Jikan {media_type} page {page} (attempt {attempt})...")
                 response = requests.get(endpoint_url, params=params, timeout=10)
 
-                if response.status_code in [429, 503]:
-                    logger.warning(f"HTTP {response.status_code} received on page {page}. Retrying in 4s...")
+                if response.status_code in [429, 503, 504]:
+                    logger.warning(f"Jikan HTTP {response.status_code} on page {page}. Retrying in 4s...")
                     retry_count += 1
                     time.sleep(4.0)
                     continue
@@ -144,27 +241,17 @@ def fetch_jikan_endpoint(
                 response.raise_for_status()
                 break
             except requests.RequestException as e:
-                logger.warning(f"Request error on page {page} (attempt {attempt}): {e}")
+                logger.warning(f"Jikan request error on page {page} (attempt {attempt}): {e}")
                 retry_count += 1
                 time.sleep(4.0)
 
         if response is None or response.status_code != 200:
-            logger.error(f"Failed to fetch page {page} for {media_type} after retries. Moving to next page.")
-            page += 1
-            time.sleep(1.0)
-            continue
+            logger.error(f"Jikan page {page} failed with status {getattr(response, 'status_code', None)}.")
+            break
 
-        try:
-            data = response.json()
-        except Exception as e:
-            logger.error(f"JSON decode error on page {page}: {e}")
-            page += 1
-            time.sleep(1.0)
-            continue
-
+        data = response.json()
         items = data.get("data", [])
         if not items:
-            logger.info(f"No more items returned for {media_type} at page {page}.")
             break
 
         for item in items:
@@ -174,16 +261,13 @@ def fetch_jikan_endpoint(
 
             cleaned_syn = clean_synopsis(synopsis_raw)
 
-            # Skip if synopsis is too short (< 50 chars)
             if len(cleaned_syn) < 50:
                 skipped_short_synopsis += 1
                 continue
 
-            # Check for cross-dataset or local duplication
             norm_def = normalize_string(title_default)
             norm_eng = normalize_string(title_english)
 
-            # Check if title appears in existing Goodreads signatures
             is_cross_dup = False
             for sig in [norm_def, norm_eng]:
                 if sig and any(sig in existing_sig for existing_sig in existing_signatures if len(sig) > 5):
@@ -211,29 +295,38 @@ def fetch_jikan_endpoint(
                 break
 
         page += 1
-        # Respect Jikan API rate limits (1 request per second)
         time.sleep(1.0)
 
-    logger.info(f"Completed {media_type} fetch: {len(results)} items collected.")
     return results, skipped_cross_duplicates, skipped_short_synopsis, retry_count
 
 
 def main() -> None:
-    """Main execution function for fetching Jikan Anime & Manga dataset."""
+    """Main execution function for Anime & Manga dataset collection."""
     start_time = time.time()
-    logger.info("Starting Jikan API Anime & Manga data fetch...")
+    logger.info("Starting Anime & Manga API data collection...")
 
-    # Load existing titles for deduplication
     existing_signatures = load_existing_titles()
 
-    # Target counts: ~490 Manga (70%), ~210 Anime (30%)
-    manga_items, m_cross_dup, m_short, m_retries = fetch_jikan_endpoint(
+    # Attempt Jikan API first; if Jikan times out (HTTP 504), automatically use Kitsu API
+    manga_items, m_cross_dup, m_short, m_retries = fetch_jikan_data(
         JIKAN_MANGA_URL, target_count=490, media_type="Manga", existing_signatures=existing_signatures
     )
 
-    anime_items, a_cross_dup, a_short, a_retries = fetch_jikan_endpoint(
+    if len(manga_items) < 100:
+        logger.warning("Jikan API unavailable/timing out. Failing over to Kitsu REST API for Manga...")
+        manga_items, m_cross_dup, m_short, m_retries = fetch_kitsu_data(
+            KITSU_MANGA_URL, target_count=490, media_type="Manga", existing_signatures=existing_signatures
+        )
+
+    anime_items, a_cross_dup, a_short, a_retries = fetch_jikan_data(
         JIKAN_ANIME_URL, target_count=210, media_type="Anime", existing_signatures=existing_signatures
     )
+
+    if len(anime_items) < 50:
+        logger.warning("Jikan API unavailable/timing out. Failing over to Kitsu REST API for Anime...")
+        anime_items, a_cross_dup, a_short, a_retries = fetch_kitsu_data(
+            KITSU_ANIME_URL, target_count=210, media_type="Anime", existing_signatures=existing_signatures
+        )
 
     all_items = manga_items + anime_items
     total_cross_dup = m_cross_dup + a_cross_dup
@@ -247,12 +340,12 @@ def main() -> None:
     elapsed_seconds = round(time.time() - start_time, 2)
 
     print("\n" + "=" * 70)
-    print("                 JIKAN API FETCH SUMMARY")
+    print("                 ANIME & MANGA API FETCH SUMMARY")
     print("=" * 70)
     print(f"Total Rows Achieved:               {len(df_output)} (Manga: {len(manga_items)}, Anime: {len(anime_items)})")
     print(f"Cross-Dataset Duplicates Skipped:  {total_cross_dup}")
     print(f"Short/Empty Synopses Skipped:      {total_short}")
-    print(f"HTTP 429/503 Retries Triggered:    {total_retries}")
+    print(f"HTTP 429/503/504 Retries/Failovers: {total_retries}")
     print(f"Total Execution Time:              {elapsed_seconds} seconds")
     print(f"Saved Output to:                   {OUTPUT_CSV_PATH}")
     print("=" * 70 + "\n")
