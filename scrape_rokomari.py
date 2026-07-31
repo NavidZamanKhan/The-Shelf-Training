@@ -37,21 +37,21 @@ OUTPUT_CSV_PATH = PROCESSED_DIR / "rokomari_bangla.csv"
 
 # Category Configurations (Target Shelf -> (Category URL, Target Count))
 CATEGORY_TARGETS = [
-    ("Science Fiction", "https://www.rokomari.com/book/category/15/science-fiction", 50),
-    ("Horror", "https://www.rokomari.com/book/category/16/horror", 50),
-    ("Mystery", "https://www.rokomari.com/book/category/17/detective", 50),
+    ("Science Fiction", "https://www.rokomari.com/book/category/410/science-fiction", 50),
+    ("Horror", "https://www.rokomari.com/book/category/408/mystery-detective-horror-thriller-and-adventure", 40),
+    ("Mystery", "https://www.rokomari.com/book/category/408/mystery-detective-horror-thriller-and-adventure", 50),
     ("Romance", "https://www.rokomari.com/book/category/2/romantic-novels", 50),
     ("Fantasy", "https://www.rokomari.com/book/category/77/fantasy", 50),
     ("History", "https://www.rokomari.com/book/category/9/history", 50),
     ("Historical Fiction", "https://www.rokomari.com/book/category/79/historical-novel", 50),
     ("Biography & Memoir", "https://www.rokomari.com/book/category/12/biography", 50),
     ("Poetry", "https://www.rokomari.com/book/category/3/poetry", 50),
-    ("Philosophy", "https://www.rokomari.com/book/category/11/philosophy", 40),
-    ("Humor", "https://www.rokomari.com/book/category/34/humor", 40),
-    ("Religion & Spirituality", "https://www.rokomari.com/book/category/6/islamic-books", 50),
+    ("Philosophy", "https://www.rokomari.com/book/category/29/philosophy-and-philosopher", 40),
+    ("Humor", "https://www.rokomari.com/book/category/20/humor-entertainment", 40),
+    ("Religion & Spirituality", "https://www.rokomari.com/book/category/30/religious-books", 50),
     ("Self-Help & Personal Development", "https://www.rokomari.com/book/category/13/self-help-and-personal-development", 50),
     ("Classic Literature", "https://www.rokomari.com/book/category/4/classics", 50),
-    ("Miscellaneous", "https://www.rokomari.com/book/category/14/general-knowledge", 50),
+    ("Miscellaneous", "https://www.rokomari.com/book/category/42/articles", 50),
     # Category 74: Single-pass fetch for sequential art (Splits into Graphic Novels & Anime & Manga)
     ("Sequential Art Category 74", "https://www.rokomari.com/book/category/74/comics-and-graphic-novels", 90),
 ]
@@ -127,13 +127,23 @@ def scrape_rokomari_pipeline():
                     page.wait_for_timeout(2000)
                     soup = BeautifulSoup(page.content(), "html.parser")
 
-                    # Extract book links from listing page
+                    # Extract book links from listing page grid
                     book_links = []
                     for a in soup.find_all("a", href=True):
                         href = a["href"]
-                        if "/book/" in href and not any(x in href for x in ["/category/", "/author/", "/publisher/", "/categories"]):
-                            full_href = href if href.startswith("http") else f"https://www.rokomari.com{href}"
-                            book_links.append(full_href)
+                        if "/book/" in href and re.search(r"/book/\d+/", href):
+                            # Exclude links inside headers, footers, navbars, or SEO text sections
+                            is_nav_or_footer = False
+                            for parent in a.parents:
+                                classes = " ".join(parent.get("class", []))
+                                ids = str(parent.get("id", ""))
+                                combined = f"{classes} {ids}".lower()
+                                if any(k in combined for k in ["header", "footer", "navbar", "navigation", "main-seo-content", "seo-content", "cart"]):
+                                    is_nav_or_footer = True
+                                    break
+                            if not is_nav_or_footer:
+                                full_href = href if href.startswith("http") else f"https://www.rokomari.com{href}"
+                                book_links.append(full_href)
 
                     # Deduplicate links on current page
                     book_links = list(dict.fromkeys(book_links))
