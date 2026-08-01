@@ -37,17 +37,18 @@ INPUT_MODEL_PATH = OUTPUT_DIR / "shelf_classifier_pipeline.joblib"
 ONNX_OUTPUT_PATH = OUTPUT_DIR / "shelf_classifier.onnx"
 TFLITE_OUTPUT_PATH = OUTPUT_DIR / "shelf_classifier.tflite"
 VOCAB_OUTPUT_PATH = OUTPUT_DIR / "tfidf_vocab.json"
+MODEL_JSON_PATH = OUTPUT_DIR / "tfidf_model.json"
 
 
 def export_vocabulary_and_labels(pipeline: Any) -> None:
     """
-    Extracts TF-IDF vocabulary, idf weights, and class labels from the trained scikit-learn pipeline 
-    so Flutter can perform lightweight on-device vectorization if needed.
+    Extracts TF-IDF vocabulary, idf weights, model coefficients, and class labels 
+    from the trained scikit-learn pipeline so Dart can perform lightweight on-device vectorization and inference.
     
     Args:
         pipeline: Trained Scikit-learn Pipeline object.
     """
-    logger.info("Extracting vocabulary and labels for Flutter on-device vectorizer...")
+    logger.info("Extracting vocabulary, IDF weights, and class labels...")
     
     try:
         tfidf = pipeline.named_steps["tfidf"]
@@ -56,8 +57,10 @@ def export_vocabulary_and_labels(pipeline: Any) -> None:
         vocab = {str(k): int(v) for k, v in tfidf.vocabulary_.items()}
         idf_weights = [float(x) for x in tfidf.idf_]
         classes = [str(c) for c in classifier.classes_]
+        coef = [[float(val) for val in row] for row in classifier.coef_]
+        intercept = [float(x) for x in classifier.intercept_]
 
-        metadata = {
+        vocab_metadata = {
             "classes": classes,
             "vocabulary": vocab,
             "idf": idf_weights,
@@ -67,9 +70,25 @@ def export_vocabulary_and_labels(pipeline: Any) -> None:
         }
 
         with open(VOCAB_OUTPUT_PATH, "w", encoding="utf-8") as f:
-            json.dump(metadata, f, indent=2)
+            json.dump(vocab_metadata, f, indent=2)
             
         logger.info(f"Saved vocabulary ({len(vocab)} terms) and class labels to {VOCAB_OUTPUT_PATH}")
+
+        # Complete parameter dictionary for Pure Dart inference engine
+        full_model_data = {
+            "classes": classes,
+            "vocabulary": vocab,
+            "idf": idf_weights,
+            "coef": coef,
+            "intercept": intercept,
+            "ngram_range": [int(n) for n in tfidf.ngram_range],
+            "sublinear_tf": bool(tfidf.sublinear_tf),
+        }
+
+        with open(MODEL_JSON_PATH, "w", encoding="utf-8") as f:
+            json.dump(full_model_data, f)
+
+        logger.info(f"Saved complete Dart model parameters ({MODEL_JSON_PATH.stat().st_size / 1024 / 1024:.2f} MB) to {MODEL_JSON_PATH}")
 
     except Exception as e:
         logger.error(f"Error extracting metadata from pipeline: {e}")
@@ -131,11 +150,6 @@ def convert_onnx_to_tflite(onnx_path: Path, tflite_path: Path) -> Optional[Path]
     """
     logger.info(f"Converting ONNX model ({onnx_path}) to TFLite format ({tflite_path})...")
     
-    # TODO: Implement conversion step via onnx2tf or tf2onnx / TFLiteConverter
-    # Example shell command or python call:
-    # import onnx2tf
-    # onnx2tf.convert(input_onnx_file_path=str(onnx_path), output_folder_path=str(OUTPUT_DIR))
-
     logger.info(
         "Placeholder: ONNX -> TFLite conversion step.\n"
         "  Recommended tool: `onnx2tf -i output/shelf_classifier.onnx -o output/`\n"
