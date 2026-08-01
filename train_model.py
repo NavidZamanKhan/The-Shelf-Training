@@ -17,6 +17,7 @@ import logging
 from pathlib import Path
 from typing import Tuple, Dict, Any, List
 
+import numpy as np
 import pandas as pd
 import joblib
 from sklearn.model_selection import train_test_split
@@ -24,6 +25,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import classification_report, accuracy_score, confusion_matrix
+from sklearn.utils.class_weight import compute_class_weight
 
 # Configure logging
 logging.basicConfig(
@@ -52,11 +54,20 @@ def load_dataset() -> pd.DataFrame:
     return df
 
 
-def build_pipeline() -> Pipeline:
+def build_pipeline(y_train: pd.Series) -> Pipeline:
     """
     Constructs an end-to-end Scikit-Learn Pipeline with TF-IDF vectorization and LogisticRegression.
+    Dynamically computes balanced class weights and applies a targeted 0.7x multiplier to Anime & Manga.
     """
-    logger.info("Building TF-IDF + LogisticRegression pipeline...")
+    logger.info("Building TF-IDF + LogisticRegression pipeline with targeted class weight scaling...")
+    unique_classes = np.array(sorted(y_train.unique()))
+    balanced_weights = compute_class_weight("balanced", classes=unique_classes, y=y_train)
+    custom_class_weights = dict(zip(unique_classes, balanced_weights))
+
+    # Apply 0.7x multiplier specifically to Anime & Manga to optimize precision against Fantasy
+    if "Anime & Manga" in custom_class_weights:
+        custom_class_weights["Anime & Manga"] *= 0.7
+
     vectorizer = TfidfVectorizer(
         max_features=10000,
         ngram_range=(1, 2),
@@ -66,7 +77,7 @@ def build_pipeline() -> Pipeline:
 
     classifier = LogisticRegression(
         C=1.0,
-        class_weight="balanced",
+        class_weight=custom_class_weights,
         solver="lbfgs",
         max_iter=1000,
         random_state=42
@@ -93,7 +104,7 @@ def train_and_evaluate(df: pd.DataFrame) -> Tuple[Pipeline, float]:
 
     logger.info(f"Dataset split: {len(X_train)} train samples, {len(X_test)} test samples.")
 
-    pipeline = build_pipeline()
+    pipeline = build_pipeline(y_train)
 
     logger.info("Fitting model pipeline on training set...")
     pipeline.fit(X_train, y_train)
