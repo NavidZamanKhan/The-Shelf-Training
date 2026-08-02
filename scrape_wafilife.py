@@ -1,14 +1,15 @@
 """
-scrape_rokomari.py
+scrape_wafilife.py
 ------------------
-Uncapped, production-grade Bangla book scraper for Rokomari.com using Playwright.
+Bangla book scraper for Wafilife.com using Playwright.
 
-Scrapes metadata (title + plot synopsis) across 17 target shelf categories:
-  - Full pagination discovery until listings run out (uncapped)
-  - Single-pass Category 74 split (General terms + expanded franchise markers for Manga/Graphic Novels)
-  - Stateful checkpointing (`datasets/processed/rokomari_state.json`)
-  - Progressive CSV writing (`datasets/processed/rokomari_bangla.csv`)
-  - Anti-bot politeness delays (1.0 - 2.0s), circuit breaker pause on errors
+Scrapes metadata across all 17 target shelf categories:
+  - Subject URL category mapping
+  - Full pagination discovery
+  - Single-pass Category 74 split (Anime & Manga vs Graphic Novels)
+  - Stateful checkpointing (`datasets/processed/wafilife_state.json`)
+  - Progressive CSV writing (`datasets/processed/wafilife_bangla.csv`)
+  - Politeness delays and circuit breaker error recovery
 """
 
 import json
@@ -33,27 +34,27 @@ logger = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).parent
 DATASETS_DIR = BASE_DIR / "datasets"
 PROCESSED_DIR = DATASETS_DIR / "processed"
-OUTPUT_CSV_PATH = PROCESSED_DIR / "rokomari_bangla.csv"
-STATE_FILE_PATH = PROCESSED_DIR / "rokomari_state.json"
+OUTPUT_CSV_PATH = PROCESSED_DIR / "wafilife_bangla.csv"
+STATE_FILE_PATH = PROCESSED_DIR / "wafilife_state.json"
 
-# Target Shelf Categories for Rokomari
+# Wafilife Category Targets (Target Shelf -> Category URL)
 CATEGORY_TARGETS = [
-    ("Science Fiction", "https://www.rokomari.com/book/category/410/science-fiction"),
-    ("Horror", "https://www.rokomari.com/book/category/408/mystery-detective-horror-thriller-and-adventure"),
-    ("Mystery", "https://www.rokomari.com/book/category/408/mystery-detective-horror-thriller-and-adventure"),
-    ("Romance", "https://www.rokomari.com/book/category/2/romantic-novels"),
-    ("Fantasy", "https://www.rokomari.com/book/category/77/fantasy"),
-    ("History", "https://www.rokomari.com/book/category/9/history"),
-    ("Historical Fiction", "https://www.rokomari.com/book/category/79/historical-novel"),
-    ("Biography & Memoir", "https://www.rokomari.com/book/category/12/biography"),
-    ("Poetry", "https://www.rokomari.com/book/category/3/poetry"),
-    ("Philosophy", "https://www.rokomari.com/book/category/29/philosophy-and-philosopher"),
-    ("Humor", "https://www.rokomari.com/book/category/20/humor-entertainment"),
-    ("Religion & Spirituality", "https://www.rokomari.com/book/category/30/religious-books"),
-    ("Self-Help & Personal Development", "https://www.rokomari.com/book/category/13/self-help-and-personal-development"),
-    ("Classic Literature", "https://www.rokomari.com/book/category/4/classics"),
-    ("Miscellaneous", "https://www.rokomari.com/book/category/42/articles"),
-    ("Sequential Art Category 74", "https://www.rokomari.com/book/category/74/comics-and-graphic-novels"),
+    ("Science Fiction", "https://www.wafilife.com/cat/books/subject/science-fiction-novel"),
+    ("Horror", "https://www.wafilife.com/cat/books/subject/supernatural-and-horror-novels"),
+    ("Mystery", "https://www.wafilife.com/cat/books/subject/mystery-and-detective-novels"),
+    ("Romance", "https://www.wafilife.com/cat/books/subject/shahitto-o-uponnash"),
+    ("Fantasy", "https://www.wafilife.com/cat/books/subject/parapsychological-novels"),
+    ("History", "https://www.wafilife.com/cat/books/subject/history-and-traditions"),
+    ("Historical Fiction", "https://www.wafilife.com/cat/books/subject/ঐতিহাসিক-উপন্যাস"),
+    ("Biography & Memoir", "https://www.wafilife.com/cat/books/subject/biographies-memories-interviews"),
+    ("Poetry", "https://www.wafilife.com/cat/books/subject/chora-kobita-o-abritti"),
+    ("Philosophy", "https://www.wafilife.com/cat/books/subject/দর্শন-বিষয়ক-বই"),
+    ("Humor", "https://www.wafilife.com/cat/books/subject/rommo-uponyash"),
+    ("Religion & Spirituality", "https://www.wafilife.com/cat/books/subject/islamic-books"),
+    ("Self-Help & Personal Development", "https://www.wafilife.com/cat/books/subject/self-help-motivational-and-meditation"),
+    ("Classic Literature", "https://www.wafilife.com/cat/books/subject/চিরায়ত-উপন্যাস"),
+    ("Miscellaneous", "https://www.wafilife.com/cat/books/subject/প্রবন্ধ"),
+    ("Sequential Art Category 74", "https://www.wafilife.com/cat/books/subject/comics-noksha-o-chobir-golpo"),
 ]
 
 # Category 74 Split Terms for Anime & Manga
@@ -76,7 +77,7 @@ def navigate_with_retry(page, url: str, retries: int = 3, timeout: int = 30000) 
             page.wait_for_timeout(1500)
             return True
         except Exception as e:
-            logger.warning(f"Navigation attempt {attempt}/{retries} failed for {url}: {e}")
+            logger.warning(f"Navigation attempt {attempt}/{retries} failed for Wafilife URL {url}: {e}")
             time.sleep(2.0 * attempt)
     return False
 
@@ -94,12 +95,13 @@ def is_manga_entry(title: str, description: str) -> bool:
 
 
 def clean_text(raw_text: str) -> str:
-    """Cleans scraped Bangla text by collapsing whitespace and stripping promotional headers."""
+    """Cleans scraped Bangla text by collapsing whitespace and stripping UI headers/footers."""
     if not raw_text:
         return ""
     text = str(raw_text)
-    text = re.sub(r"বইটির বিস্তারিত দেখুন", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"বইয়ের সংক্ষিপ্ত কথা", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"Wafilife makes Islamic shopping easy.*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"To reach the highest traffic.*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"Make your online shop easier.*", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
@@ -137,9 +139,9 @@ def append_records_to_csv(records: List[Dict[str, str]]):
     df_new.to_csv(OUTPUT_CSV_PATH, mode="a", index=False, header=write_header, encoding="utf-8")
 
 
-def scrape_rokomari_pipeline(max_pages_per_cat: Optional[int] = None, dry_run: bool = False):
+def scrape_wafilife_pipeline(max_pages_per_cat: Optional[int] = None, dry_run: bool = False):
     start_time = time.time()
-    logger.info(f"Starting Rokomari Bangla scraping pipeline (max_pages_per_cat={max_pages_per_cat}, dry_run={dry_run})...")
+    logger.info(f"Starting Wafilife Bangla scraping pipeline (max_pages_per_cat={max_pages_per_cat}, dry_run={dry_run})...")
 
     state = load_state()
     scraped_urls_set: Set[str] = set(state.get("scraped_urls", []))
@@ -149,8 +151,8 @@ def scrape_rokomari_pipeline(max_pages_per_cat: Optional[int] = None, dry_run: b
     target_categories = CATEGORY_TARGETS
     if dry_run:
         target_categories = [
-            ("Science Fiction", "https://www.rokomari.com/book/category/410/science-fiction"),
-            ("Philosophy", "https://www.rokomari.com/book/category/29/philosophy-and-philosopher")
+            ("Science Fiction", "https://www.wafilife.com/cat/books/subject/science-fiction-novel"),
+            ("Philosophy", "https://www.wafilife.com/cat/books/subject/দর্শন-বিষয়ক-বই")
         ]
 
     consecutive_errors = 0
@@ -168,7 +170,7 @@ def scrape_rokomari_pipeline(max_pages_per_cat: Optional[int] = None, dry_run: b
                 continue
 
             logger.info(f"\n=======================================================")
-            logger.info(f"   STARTING CATEGORY: '{shelf_label}'")
+            logger.info(f"   STARTING WAFILIFE CATEGORY: '{shelf_label}'")
             logger.info(f"=======================================================")
 
             start_page = completed_pages_dict.get(shelf_label, 0) + 1
@@ -180,16 +182,16 @@ def scrape_rokomari_pipeline(max_pages_per_cat: Optional[int] = None, dry_run: b
                     logger.info(f"Reached page limit ({max_pages_per_cat}) for category '{shelf_label}'.")
                     break
 
-                page_url = f"{cat_url}?page={current_page}" if current_page > 1 else cat_url
+                page_url = f"{cat_url}/page/{current_page}" if current_page > 1 else cat_url
                 logger.info(f"Navigating to listing page {current_page}: {page_url}")
 
                 page_records: List[Dict[str, str]] = []
 
                 if not navigate_with_retry(page, page_url):
-                    logger.error(f"Failed to navigate to listing page {page_url} after retries.")
+                    logger.error(f"Failed to navigate to Wafilife listing page {page_url} after retries.")
                     consecutive_errors += 1
                     if consecutive_errors >= 5:
-                        logger.error("5 consecutive errors on listing page. Pausing for 60 seconds...")
+                        logger.error("5 consecutive errors on Wafilife listing page. Pausing for 60 seconds...")
                         time.sleep(60)
                         consecutive_errors = 0
                     current_page += 1
@@ -198,28 +200,19 @@ def scrape_rokomari_pipeline(max_pages_per_cat: Optional[int] = None, dry_run: b
                 try:
                     soup = BeautifulSoup(page.content(), "html.parser")
 
-                    # Extract book links from listing page grid
+                    # Extract detail links (/pd/ URLs)
                     book_links = []
                     for a in soup.find_all("a", href=True):
                         href = a["href"]
-                        if "/book/" in href and re.search(r"/book/\d+/", href):
-                            is_nav_or_footer = False
-                            for parent in a.parents:
-                                classes = " ".join(parent.get("class", []))
-                                ids = str(parent.get("id", ""))
-                                combined = f"{classes} {ids}".lower()
-                                if any(k in combined for k in ["header", "footer", "navbar", "navigation", "main-seo-content", "seo-content", "cart"]):
-                                    is_nav_or_footer = True
-                                    break
-                            if not is_nav_or_footer:
-                                full_href = href if href.startswith("http") else f"https://www.rokomari.com{href}"
-                                book_links.append(full_href)
+                        if "/pd/" in href:
+                            full_href = href if href.startswith("http") else f"https://www.wafilife.com{href}"
+                            book_links.append(full_href)
 
                     book_links = list(dict.fromkeys(book_links))
-                    logger.info(f"Page {current_page}: Found {len(book_links)} book links.")
+                    logger.info(f"Page {current_page}: Found {len(book_links)} product links.")
 
                     if not book_links:
-                        logger.info(f"No more books found for category '{shelf_label}' at page {current_page}. Reached catalog end.")
+                        logger.info(f"No more books found for category '{shelf_label}' at page {current_page}. Reached end.")
                         break
 
                     consecutive_errors = 0
@@ -232,7 +225,7 @@ def scrape_rokomari_pipeline(max_pages_per_cat: Optional[int] = None, dry_run: b
                             scraped_urls_set.add(book_url)
                             consecutive_errors += 1
                             if consecutive_errors >= 5:
-                                logger.error("5 consecutive detail errors. Pausing for 60s...")
+                                logger.error("5 consecutive detail errors on Wafilife. Pausing for 60s...")
                                 time.sleep(60)
                                 consecutive_errors = 0
                             continue
@@ -241,9 +234,9 @@ def scrape_rokomari_pipeline(max_pages_per_cat: Optional[int] = None, dry_run: b
                             detail_soup = BeautifulSoup(page.content(), "html.parser")
 
                             # Extract Title
-                            h1_tag = detail_soup.find("h1") or detail_soup.find("title")
+                            h1_tag = detail_soup.find("h1")
                             title_text = h1_tag.get_text(strip=True) if h1_tag else ""
-                            title_text = re.sub(r"\| Rokomari\.com", "", title_text).strip()
+                            title_text = re.sub(r"\| Wafilife\.com.*", "", title_text).strip()
 
                             norm_title = re.sub(r"[^a-z0-9\u0980-\u09ff]", "", title_text.lower())
                             if not norm_title or norm_title in seen_titles_set:
@@ -251,11 +244,16 @@ def scrape_rokomari_pipeline(max_pages_per_cat: Optional[int] = None, dry_run: b
                                 continue
 
                             # Extract Synopsis
-                            summary_div = detail_soup.find("div", id="summary") or detail_soup.find("section", id="summary") or detail_soup.find("div", class_=lambda c: c and "summary" in str(c))
-                            if summary_div:
-                                synopsis_raw = summary_div.get_text(strip=True)
-                            else:
-                                synopsis_raw = detail_soup.get_text(strip=True)
+                            synopsis_divs = detail_soup.find_all("div", class_=lambda c: c and "text-brand-two" in str(c))
+                            synopsis_raw = ""
+                            for d in synopsis_divs:
+                                txt = d.get_text(strip=True)
+                                if len(txt) > len(synopsis_raw):
+                                    synopsis_raw = txt
+
+                            if not synopsis_raw:
+                                body_text = detail_soup.get_text(strip=True)
+                                synopsis_raw = body_text[:500]
 
                             cleaned_syn = clean_text(synopsis_raw)
 
@@ -278,22 +276,22 @@ def scrape_rokomari_pipeline(max_pages_per_cat: Optional[int] = None, dry_run: b
                                 "title": title_text,
                                 "text": full_text,
                                 "shelf_label": assigned_label,
-                                "source": "rokomari",
+                                "source": "wafilife",
                                 "url": book_url
                             }
                             page_records.append(record)
                             category_new_records += 1
 
-                            logger.info(f"  + Scraped: [{assigned_label}] {title_text[:40]}...")
+                            logger.info(f"  + Scraped Wafilife: [{assigned_label}] {title_text[:40]}...")
                             consecutive_errors = 0
 
                         except Exception as e:
-                            logger.warning(f"Error parsing detail page {book_url}: {e}")
+                            logger.warning(f"Error parsing Wafilife detail page {book_url}: {e}")
 
                         time.sleep(1.0)
 
                 except Exception as e:
-                    logger.error(f"Error parsing listing page {page_url}: {e}")
+                    logger.error(f"Error parsing Wafilife listing page {page_url}: {e}")
 
                 # Append records for this listing page to CSV & save state
                 if page_records:
@@ -312,13 +310,13 @@ def scrape_rokomari_pipeline(max_pages_per_cat: Optional[int] = None, dry_run: b
                     state.setdefault("completed_categories", []).append(shelf_label)
                     save_state(state)
 
-            logger.info(f"Category '{shelf_label}' complete! Added {category_new_records} new records.")
+            logger.info(f"Wafilife Category '{shelf_label}' complete! Added {category_new_records} new records.")
 
         browser.close()
 
     elapsed = round(time.time() - start_time, 2)
-    logger.info(f"Rokomari scrape run finished in {elapsed}s.")
+    logger.info(f"Wafilife scrape run finished in {elapsed}s.")
 
 
 if __name__ == "__main__":
-    scrape_rokomari_pipeline()
+    scrape_wafilife_pipeline()
