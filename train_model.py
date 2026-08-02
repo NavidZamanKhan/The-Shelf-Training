@@ -171,7 +171,9 @@ def run_sanity_checks(pipeline: Pipeline) -> None:
         "Deep philosophical thoughts on human consciousness, morality, and the nature of reality.",
         "একটি ভয়ংকর পুরনো রাজবাড়িতে অশরীরী ভূতের রহস্যময় উপদ্রব ও আতঙ্কের গল্প...",
         "দুটি তরুণ হৃদয়ের গভীর ভালোবাসা, প্রেম, ব্যাকুলতা ও আবেগঘন বিরহের অনুভূতি...",
-        "ভবিষ্যতের মহাকাশ অভিযান, ভিনগ্রহের প্রাণী ও রোবটের বৈজ্ঞানিক কল্পকাহিনী..."
+        "ভবিষ্যতের মহাকাশ অভিযান, ভিনগ্রহের প্রাণী ও রোবটের বৈজ্ঞানিক কল্পকাহিনী...",
+        "This paper proposes a novel neural network architecture for natural language processing tasks.",
+        "We present an experimental analysis of quantum entanglement under varying environmental conditions."
     ]
 
     print("SANITY CHECK INFERENCE PREDICTIONS:")
